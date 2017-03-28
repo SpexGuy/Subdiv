@@ -22,7 +22,7 @@ endif()
 
 include_directories(${INCLUDE})
 
-set(SOURCE_FILES main.cpp gl_includes.h Perf.h Perf.cpp stb_image_impl.cpp)
+set(SOURCE_FILES main.cpp gl_includes.h Perf.h Perf.cpp stb_image_impl.cpp stl.cpp stl.h)
 add_executable(Subdiv ${SOURCE_FILES})
 
 if (APPLE)
