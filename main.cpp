@@ -82,6 +82,7 @@ const char *linevert = GLSL(
 
 GLuint vao, linevao;
 GLuint shader, lineShader;
+GLuint linesSize;
 
 #define BAD_OPP (std::numeric_limits<uint32_t>::max())
 
@@ -105,6 +106,40 @@ struct Vertex {
 
 vector<Vertex> verts;
 
+
+void generateLineBuffer() {
+    vector<vec3> pts;
+    pts.reserve(mesh.size());
+    for (uint32_t c = 0, n = mesh.size(); c < n; c++) {
+        vec3 pt = positions[mesh[c].e[0].pos] +
+                  positions[mesh[c].e[1].pos] +
+                  positions[mesh[c].e[2].pos];
+        uint32_t fourth = mesh[c].e[3].pos;
+        if (fourth != BAD_OPP) {
+            pts.push_back((pt + positions[fourth]) / 4.f);
+        } else {
+            pts.push_back(pt / 3.f);
+        }
+    }
+
+    vector<uint32_t> indices;
+    indices.reserve(mesh.size() * 4);
+    HalfEdge *edge = reinterpret_cast<HalfEdge *>(mesh.data());
+    for (uint32_t c = 0, n = mesh.size() * 4; c < n; c++) {
+        if (edge[c].opp != BAD_OPP && edge[c].opp > c) {
+            indices.push_back(c / 4);
+            indices.push_back(edge[c].opp / 4);
+        }
+    }
+
+    glBindVertexArray(linevao);
+    glBufferData(GL_ARRAY_BUFFER, pts.size() * sizeof(pts[0]), pts.data(), GL_DYNAMIC_DRAW);
+    glBufferData(GL_ELEMENT_ARRAY_BUFFER, indices.size() * sizeof(indices[0]), indices.data(), GL_DYNAMIC_DRAW);
+    linesSize = indices.size();
+
+    printf("Generated %d indices\n", linesSize);
+}
+
 #define EPSILON 0.00001f
 uint32_t pointIndex(vector<vec3> &points, const vec3 &pt) {
     uint32_t n = points.size();
@@ -119,7 +154,7 @@ uint32_t pointIndex(vector<vec3> &points, const vec3 &pt) {
 
 void setup() {
     glClearColor(0.2f, 0.2f, 0.2f, 1.0f);
-    glEnable(GL_DEPTH_TEST);
+    glDisable(GL_DEPTH_TEST);
     glDisable(GL_CULL_FACE);
 
     // Load mesh
@@ -167,7 +202,73 @@ void setup() {
         pt += 3;
     }
     isTriangles = true;
-    printf("%d triangles with %d unique points.\n", mesh.size(), positions.size());
+    printf("%lu triangles with %lu unique points.\n", mesh.size(), positions.size());
+
+    // Find adjacencies for the triangles
+    HalfEdge *edge = reinterpret_cast<HalfEdge *>(mesh.data());
+    for (uint32_t c = 0, n = mesh.size() * 4; c < n; c += 4) {
+        for (uint32_t d = c + 4; d < n; d += 4) {
+            // Edge c-01
+            if (edge[c+0].opp == BAD_OPP) {
+                if (edge[c + 0].pos == edge[d + 1].pos &&
+                    edge[c + 1].pos == edge[d + 0].pos) {
+                    edge[c + 0].opp = d + 0;
+                    edge[d + 0].opp = c + 0;
+                } else
+                if (edge[c + 0].pos == edge[d + 2].pos &&
+                    edge[c + 1].pos == edge[d + 1].pos) {
+                    edge[c + 0].opp = d + 1;
+                    edge[d + 1].opp = c + 0;
+                } else
+                if (edge[c + 0].pos == edge[d + 0].pos &&
+                    edge[c + 1].pos == edge[d + 2].pos) {
+                    edge[c + 0].opp = d + 2;
+                    edge[d + 2].opp = c + 0;
+                }
+            }
+            // Edge c-12
+            if (edge[c+1].opp == BAD_OPP) {
+                if (edge[c + 1].pos == edge[d + 1].pos &&
+                    edge[c + 2].pos == edge[d + 0].pos) {
+                    edge[c + 1].opp = d + 0;
+                    edge[d + 0].opp = c + 1;
+                } else
+                if (edge[c + 1].pos == edge[d + 2].pos &&
+                    edge[c + 2].pos == edge[d + 1].pos) {
+                    edge[c + 1].opp = d + 1;
+                    edge[d + 1].opp = c + 1;
+                } else
+                if (edge[c + 1].pos == edge[d + 0].pos &&
+                    edge[c + 2].pos == edge[d + 2].pos) {
+                    edge[c + 1].opp = d + 2;
+                    edge[d + 2].opp = c + 1;
+                }
+            }
+            // Edge c-20
+            if (edge[c+2].opp == BAD_OPP) {
+                if (edge[c + 2].pos == edge[d + 1].pos &&
+                    edge[c + 0].pos == edge[d + 0].pos) {
+                    edge[c + 2].opp = d + 0;
+                    edge[d + 0].opp = c + 2;
+                } else
+                if (edge[c + 2].pos == edge[d + 2].pos &&
+                    edge[c + 0].pos == edge[d + 1].pos) {
+                    edge[c + 2].opp = d + 1;
+                    edge[d + 1].opp = c + 2;
+                } else
+                if (edge[c + 2].pos == edge[d + 0].pos &&
+                    edge[c + 0].pos == edge[d + 2].pos) {
+                    edge[c + 2].opp = d + 2;
+                    edge[d + 2].opp = c + 2;
+                }
+            }
+        }
+        if (edge[c+0].opp == BAD_OPP ||
+            edge[c+1].opp == BAD_OPP ||
+            edge[c+2].opp == BAD_OPP) {
+            printf("Missing opposite for triangle %d\n", c / 4);
+        }
+    }
 
     // Set up surface buffer
     shader = compileShader(vert, frag);
@@ -205,12 +306,14 @@ void setup() {
     glBindVertexArray(linevao);
     checkError();
 
-    GLuint lineBuffer;
+    GLuint lineBuffer, lineElm;
     glGenBuffers(1, &lineBuffer);
     glBindBuffer(GL_ARRAY_BUFFER, lineBuffer);
+    glGenBuffers(1, &lineElm);
+    glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, lineElm);
     checkError();
 
-    pos = glGetAttribLocation(shader, "position");
+    pos = glGetAttribLocation(lineShader, "position");
     glEnableVertexAttribArray(pos);
     glVertexAttribPointer(pos, 3, GL_FLOAT, GL_FALSE, sizeof(vec3), 0);
     checkError();
@@ -222,14 +325,22 @@ void setup() {
     view = lookAt(vec3(0, 0, 5), vec3(0), vec3(0, 1, 0));
     rotation = glm::scale(vec3(3/radius)) * glm::translate(-center);
     rotation = lookAt(vec3(0), vec3(-1), vec3(0, 1, 0)) * rotation;
+
+    generateLineBuffer();
 }
 
 void draw() {
     glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
 
+    glEnable(GL_DEPTH_TEST);
     glUseProgram(shader);
     glBindVertexArray(vao);
     glDrawArrays(GL_TRIANGLES, 0, verts.size());
+
+    glDisable(GL_DEPTH_TEST);
+    glUseProgram(lineShader);
+    glBindVertexArray(linevao);
+    glDrawElements(GL_LINES, linesSize, GL_UNSIGNED_INT, nullptr);
 }
 
 void updateMatrices() {
