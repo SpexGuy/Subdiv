@@ -82,6 +82,7 @@ const char *linevert = GLSL(
 
 GLuint vao, linevao;
 GLuint shader, lineShader;
+GLuint tribuf, linebuf, lineelm;
 GLuint linesSize;
 
 #define BAD_OPP (std::numeric_limits<uint32_t>::max())
@@ -102,6 +103,9 @@ vector<vec3> positions;
 struct Vertex {
     vec3 pos;
     vec3 nor;
+
+    Vertex() {}
+    Vertex(const vec3 &pos, const vec3 &nor) : pos(pos), nor(nor) {}
 };
 
 vector<Vertex> verts;
@@ -133,11 +137,44 @@ void generateLineBuffer() {
     }
 
     glBindVertexArray(linevao);
+    glBindBuffer(GL_ARRAY_BUFFER, linebuf);
     glBufferData(GL_ARRAY_BUFFER, pts.size() * sizeof(pts[0]), pts.data(), GL_DYNAMIC_DRAW);
+    glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, lineelm);
     glBufferData(GL_ELEMENT_ARRAY_BUFFER, indices.size() * sizeof(indices[0]), indices.data(), GL_DYNAMIC_DRAW);
     linesSize = indices.size();
 
     printf("Generated %d indices\n", linesSize);
+}
+
+void generateMeshBuffer() {
+    verts.clear();
+    verts.reserve(mesh.size() * 6);
+    for (uint32_t c = 0, n = mesh.size(); c < n; c++) {
+        Quad &q = mesh[c];
+        vec3 p0 = positions[q.e[0].pos];
+        vec3 p1 = positions[q.e[1].pos];
+        vec3 p2 = positions[q.e[2].pos];
+        if (q.e[3].pos == BAD_OPP) {
+            vec3 nor = cross(p0 - p2, p1 - p2);
+            verts.emplace_back(p0, nor);
+            verts.emplace_back(p1, nor);
+            verts.emplace_back(p2, nor);
+        } else {
+            printf("Quad???\n");
+            vec3 p3 = positions[q.e[3].pos];
+            vec3 nor = cross(p2 - p0, p3 - p1);
+            verts.emplace_back(p0, nor);
+            verts.emplace_back(p1, nor);
+            verts.emplace_back(p2, nor);
+            verts.emplace_back(p0, nor);
+            verts.emplace_back(p2, nor);
+            verts.emplace_back(p3, nor);
+        }
+    }
+
+    glBindVertexArray(vao);
+    glBindBuffer(GL_ARRAY_BUFFER, tribuf);
+    glBufferData(GL_ARRAY_BUFFER, verts.size() * sizeof(verts[0]), verts.data(), GL_DYNAMIC_DRAW);
 }
 
 #define EPSILON 0.00001f
@@ -280,11 +317,10 @@ void setup() {
     glBindVertexArray(vao);
     checkError();
 
-    GLuint buffer, elm;
-    glGenBuffers(1, &buffer);
-    glBindBuffer(GL_ARRAY_BUFFER, buffer);
-//    glGenBuffers(1, &elm);
-//    glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, elm);
+    glGenBuffers(1, &tribuf);
+    glBindBuffer(GL_ARRAY_BUFFER, tribuf);
+//    glGenBuffers(1, &trielm);
+//    glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, trielm);
     checkError();
 
     GLuint pos = glGetAttribLocation(shader, "position");
@@ -306,11 +342,10 @@ void setup() {
     glBindVertexArray(linevao);
     checkError();
 
-    GLuint lineBuffer, lineElm;
-    glGenBuffers(1, &lineBuffer);
-    glBindBuffer(GL_ARRAY_BUFFER, lineBuffer);
-    glGenBuffers(1, &lineElm);
-    glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, lineElm);
+    glGenBuffers(1, &linebuf);
+    glBindBuffer(GL_ARRAY_BUFFER, linebuf);
+    glGenBuffers(1, &lineelm);
+    glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, lineelm);
     checkError();
 
     pos = glGetAttribLocation(lineShader, "position");
@@ -329,6 +364,78 @@ void setup() {
     generateLineBuffer();
 }
 
+uint32_t nextEdge(HalfEdge *edges, uint32_t edge) {
+    edge++;
+    if ((edge & 3) == 0) return edge - 4;
+    if (edges[edge].pos == BAD_OPP) return edge - 3;
+    else return edge;
+}
+
+void subdivideMesh() {
+    // First, calculate all of the face points as the average of the points of the face
+    vector<vec3> newPts(positions.size(), vec3(0));
+    vector<uint8_t> newCts(positions.size(), 0);
+
+    vector<vec3> facePts;
+    facePts.reserve(mesh.size());
+    for (uint32_t c = 0, n = mesh.size(); c < n; c++) {
+        uint32_t p0 = mesh[c].e[0].pos;
+        uint32_t p1 = mesh[c].e[1].pos;
+        uint32_t p2 = mesh[c].e[2].pos;
+        uint32_t p3 = mesh[c].e[3].pos;
+        vec3 pt = positions[p0] +
+                  positions[p1] +
+                  positions[p2];
+        if (p3 != BAD_OPP) {
+            pt = (pt + positions[p3]) / 4.f;
+        } else {
+            pt /= 3.f;
+        }
+        facePts.push_back(pt);
+        newPts[p0] += pt;
+        newPts[p1] += pt;
+        newPts[p2] += pt;
+        newCts[p0] ++;
+        newCts[p1] ++;
+        newCts[p2] ++;
+        if (p3 != BAD_OPP) {
+            newPts[p3] += pt;
+            newCts[p3] ++;
+        }
+    }
+
+    vector<vec3> edgePts;
+    vector<uint32_t> edgePtPtrs;
+    edgePts.reserve(mesh.size() * 2);
+    edgePtPtrs.resize(mesh.size() * 4, BAD_OPP);
+    HalfEdge *edge = reinterpret_cast<HalfEdge *>(mesh.data());
+    for (uint32_t c = 0, n = mesh.size() * 4; c < n; c++) {
+        if (edge[c].opp != BAD_OPP && edge[c].opp > c) {
+            uint32_t next = nextEdge(edge, c);
+            vec3 pos = (positions[edge[c].pos] + positions[edge[next].pos] +
+                       facePts[c/4] + facePts[edge[c].opp / 4]) / 4.f;
+            uint32_t edgePtr = edgePts.size();
+            edgePts.push_back(pos);
+            edgePtPtrs[c/4] = edgePtr;
+            edgePtPtrs[edge[c].opp/4] = edgePtr;
+
+            newPts[edge[c].pos] += 2.f * pos;
+            newPts[edge[next].pos] += 2.f * pos;
+        }
+    }
+
+    for (uint32_t c = 0, n = positions.size(); c < n; c++) {
+        float k = float(newCts[c]);
+        assert(k >= 3);
+        newPts[c] = (newPts[c] / k + (k - 3)*positions[c]) / k;
+        if (length(newPts[c]) > 30) {
+            printf("Long vector at %d\n", c);
+        }
+    }
+
+    positions = move(newPts);
+}
+
 void draw() {
     glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
 
@@ -337,10 +444,10 @@ void draw() {
     glBindVertexArray(vao);
     glDrawArrays(GL_TRIANGLES, 0, verts.size());
 
-    glDisable(GL_DEPTH_TEST);
-    glUseProgram(lineShader);
-    glBindVertexArray(linevao);
-    glDrawElements(GL_LINES, linesSize, GL_UNSIGNED_INT, nullptr);
+//    glDisable(GL_DEPTH_TEST);
+//    glUseProgram(lineShader);
+//    glBindVertexArray(linevao);
+//    glDrawElements(GL_LINES, linesSize, GL_UNSIGNED_INT, nullptr);
 }
 
 void updateMatrices() {
@@ -373,6 +480,10 @@ static void glfw_key_callback(GLFWwindow* window, int key, int scancode, int act
         static bool wireframe = false;
         wireframe = !wireframe;
         glPolygonMode(GL_FRONT_AND_BACK, wireframe ? GL_LINE : GL_FILL);
+    } else if (key == GLFW_KEY_S) {
+        subdivideMesh();
+        //generateLineBuffer();
+        generateMeshBuffer();
     }
 }
 
