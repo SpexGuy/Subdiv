@@ -1,5 +1,4 @@
 #include <iostream>
-#include <cstdlib>
 
 #include <cmath>
 
@@ -86,6 +85,8 @@ GLuint tribuf, linebuf, lineelm;
 GLuint linesSize;
 
 #define BAD_OPP (std::numeric_limits<uint32_t>::max())
+
+const char *filename = "assets/squirtle.STL";
 
 struct HalfEdge {
     uint32_t pos;
@@ -191,6 +192,22 @@ uint32_t pointIndex(vector<vec3> &points, const vec3 &pt) {
     return n;
 }
 
+void parseArgs(int argc, char **argv) {
+    switch (argc) {
+        case 1:
+            return;
+        case 2:
+            filename = argv[1];
+            return;
+        default:
+            printf("Usage: %s [file.STL]\n", argv[0]);
+            printf("(check the assets folder for example STL files)\n");
+    }
+    if (argc == 1) return;
+    if (argc == 2) filename = argv[1];
+
+}
+
 void setup() {
     glClearColor(0.2f, 0.2f, 0.2f, 1.0f);
     glDisable(GL_DEPTH_TEST);
@@ -198,11 +215,11 @@ void setup() {
 
     // Load mesh
     vector<STLTriangle> triangles;
-    if (loadBinarySTL("assets/totodile.STL", triangles, true)) {
+    if (loadBinarySTL(filename, triangles, true)) {
         printf("Loaded %lu triangles\n", triangles.size());
     } else {
         printf("Load failed.\n");
-        return;
+        exit(1);
     }
 
     // Prepare quad mesh
@@ -244,6 +261,7 @@ void setup() {
     printf("%lu triangles with %lu unique points.\n", mesh.size(), positions.size());
 
     // Find adjacencies for the triangles
+    bool fatalError = false;
     HalfEdge *edge = reinterpret_cast<HalfEdge *>(mesh.data());
     for (uint32_t c = 0, n = mesh.size() * 4; c < n; c += 4) {
         for (uint32_t d = c + 4; d < n; d += 4) {
@@ -306,7 +324,13 @@ void setup() {
             edge[c+1].opp == BAD_OPP ||
             edge[c+2].opp == BAD_OPP) {
             printf("Missing opposite for triangle %d\n", c / 4);
+            fatalError = true;
         }
+    }
+
+    if (fatalError) {
+        printf("At least one triangle does not have a neighbor. The input mesh must be a closed surface.\n");
+        exit(2);
     }
 
     // Set up surface buffer
@@ -766,7 +790,9 @@ void loadTexture(GLuint texname, const char *filename) {
     stbi_image_free(pixels);
 }
 
-int main() {
+int main(int argc, char **argv) {
+    parseArgs(argc, argv);
+
     if (!glfwInit()) {
         cout << "Failed to init GLFW" << endl;
         exit(-1);
