@@ -137,10 +137,6 @@ void generateLineBuffer() {
         }
     }
 
-    for (int c = 0; c < indices.size(); c += 2) {
-        printf("%4d line %4d %4d\n", c/2, indices[c], indices[c+1]);
-    }
-
     glBindVertexArray(linevao);
     glBindBuffer(GL_ARRAY_BUFFER, linebuf);
     glBufferData(GL_ARRAY_BUFFER, pts.size() * sizeof(pts[0]), pts.data(), GL_DYNAMIC_DRAW);
@@ -179,6 +175,8 @@ void generateMeshBuffer() {
     glBindVertexArray(vao);
     glBindBuffer(GL_ARRAY_BUFFER, tribuf);
     glBufferData(GL_ARRAY_BUFFER, verts.size() * sizeof(verts[0]), verts.data(), GL_DYNAMIC_DRAW);
+
+    printf("Generated %lu vertices\n", verts.size());
 }
 
 #define EPSILON 0.00001f
@@ -465,8 +463,6 @@ void subdivideMesh() {
             uint32_t base12 = q.e[1].opp / 4 * 3;
             uint32_t base20 = q.e[2].opp / 4 * 3;
 
-            printf("%4d base %4d %4d %4d\n", base, base01, base12, base20);
-
             uint32_t off01 = q.e[0].opp & 3;
             uint32_t off12 = q.e[1].opp & 3;
             uint32_t off20 = q.e[2].opp & 3;
@@ -502,41 +498,78 @@ void subdivideMesh() {
             q2.e[3].pos = e2;
             q2.e[3].opp = (base + 0)*4 + 0;
 
-//            q0.e[0].pos = center;
-//            q0.e[1].pos = e0;
-//            q0.e[2].pos = e1;
-//            q0.e[3].pos = BAD_OPP;
-//
-//            q1.e[0].pos = center;
-//            q1.e[1].pos = e1;
-//            q1.e[2].pos = e2;
-//            q1.e[3].pos = BAD_OPP;
-//
-//            q2.e[0].pos = center;
-//            q2.e[1].pos = e2;
-//            q2.e[2].pos = e0;
-//            q2.e[3].pos = BAD_OPP;
-
-//            q0.e[0].pos = center;
-//            q0.e[1].pos = p0;
-//            q0.e[2].pos = p1;
-//            q0.e[3].pos = BAD_OPP;
-//
-//            q1.e[0].pos = center;
-//            q1.e[1].pos = p1;
-//            q1.e[2].pos = p2;
-//            q1.e[3].pos = BAD_OPP;
-//
-//            q2.e[0].pos = center;
-//            q2.e[1].pos = p2;
-//            q2.e[2].pos = p0;
-//            q2.e[3].pos = BAD_OPP;
-
             newMesh.push_back(q0);
             newMesh.push_back(q1);
             newMesh.push_back(q2);
         } else {
+            // Create four quads
+            uint32_t center = faceBase + c;
+            uint32_t p0 = q.e[0].pos;
+            uint32_t e0 = edgePtPtrs[c*4 + 0];
+            uint32_t p1 = q.e[1].pos;
+            uint32_t e1 = edgePtPtrs[c*4 + 1];
+            uint32_t p2 = q.e[2].pos;
+            uint32_t e2 = edgePtPtrs[c*4 + 2];
+            uint32_t p3 = q.e[3].pos;
+            uint32_t e3 = edgePtPtrs[c*4 + 3];
 
+            uint32_t base = c * 4;
+
+            uint32_t base01 = q.e[0].opp & ~3;
+            uint32_t base12 = q.e[1].opp & ~3;
+            uint32_t base23 = q.e[2].opp & ~3;
+            uint32_t base30 = q.e[3].opp & ~3;
+
+            uint32_t off01 = q.e[0].opp & 3;
+            uint32_t off12 = q.e[1].opp & 3;
+            uint32_t off23 = q.e[2].opp & 3;
+            uint32_t off30 = q.e[3].opp & 3;
+            uint32_t nxt01 = off01 == 3 ? 0 : off01+1;
+            uint32_t nxt12 = off12 == 3 ? 0 : off12+1;
+            uint32_t nxt23 = off23 == 3 ? 0 : off23+1;
+            uint32_t nxt30 = off30 == 3 ? 0 : off30+1;
+
+            Quad q0, q1, q2, q3;
+            q0.e[0].pos = center;
+            q0.e[0].opp = (base + 3)*4 + 3;
+            q0.e[1].pos = e3;
+            q0.e[1].opp = (base30 + off30)*4 + 2;
+            q0.e[2].pos = p0;
+            q0.e[2].opp = (base01 + nxt01)*4 + 1;
+            q0.e[3].pos = e0;
+            q0.e[3].opp = (base + 1)*4 + 0;
+
+            q1.e[0].pos = center;
+            q1.e[0].opp = (base + 0)*4 + 3;
+            q1.e[1].pos = e0;
+            q1.e[1].opp = (base01 + off01)*4 + 2;
+            q1.e[2].pos = p1;
+            q1.e[2].opp = (base12 + nxt12)*4 + 1;
+            q1.e[3].pos = e1;
+            q1.e[3].opp = (base + 2)*4 + 0;
+
+            q2.e[0].pos = center;
+            q2.e[0].opp = (base + 1)*4 + 3;
+            q2.e[1].pos = e1;
+            q2.e[1].opp = (base12 + off12)*4 + 2;
+            q2.e[2].pos = p2;
+            q2.e[2].opp = (base23 + nxt23)*4 + 1;
+            q2.e[3].pos = e2;
+            q2.e[3].opp = (base + 3)*4 + 0;
+
+            q3.e[0].pos = center;
+            q3.e[0].opp = (base + 2)*4 + 3;
+            q3.e[1].pos = e2;
+            q3.e[1].opp = (base23 + off23)*4 + 2;
+            q3.e[2].pos = p3;
+            q3.e[2].opp = (base30 + nxt30)*4 + 1;
+            q3.e[3].pos = e3;
+            q3.e[3].opp = (base + 0)*4 + 0;
+
+            newMesh.push_back(q0);
+            newMesh.push_back(q1);
+            newMesh.push_back(q2);
+            newMesh.push_back(q3);
         }
     }
 
