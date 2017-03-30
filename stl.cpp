@@ -4,6 +4,7 @@
 
 #include <ios>
 #include <fstream>
+#include <cstring>
 #include "stl.h"
 
 using namespace std;
