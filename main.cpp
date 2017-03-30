@@ -96,6 +96,7 @@ struct Quad {
     HalfEdge e[4];
 };
 
+bool drawAdjacency = false;
 bool isTriangles;
 vector<Quad> mesh;
 vector<vec3> positions;
@@ -136,6 +137,10 @@ void generateLineBuffer() {
         }
     }
 
+    for (int c = 0; c < indices.size(); c += 2) {
+        printf("%4d line %4d %4d\n", c/2, indices[c], indices[c+1]);
+    }
+
     glBindVertexArray(linevao);
     glBindBuffer(GL_ARRAY_BUFFER, linebuf);
     glBufferData(GL_ARRAY_BUFFER, pts.size() * sizeof(pts[0]), pts.data(), GL_DYNAMIC_DRAW);
@@ -160,15 +165,14 @@ void generateMeshBuffer() {
             verts.emplace_back(p1, nor);
             verts.emplace_back(p2, nor);
         } else {
-            printf("Quad???\n");
             vec3 p3 = positions[q.e[3].pos];
             vec3 nor = cross(p2 - p0, p3 - p1);
-            verts.emplace_back(p0, nor);
             verts.emplace_back(p1, nor);
             verts.emplace_back(p2, nor);
-            verts.emplace_back(p0, nor);
-            verts.emplace_back(p2, nor);
             verts.emplace_back(p3, nor);
+            verts.emplace_back(p1, nor);
+            verts.emplace_back(p3, nor);
+            verts.emplace_back(p0, nor);
         }
     }
 
@@ -373,12 +377,20 @@ uint32_t nextEdge(HalfEdge *edges, uint32_t edge) {
 
 void subdivideMesh() {
     // First, calculate all of the face points as the average of the points of the face
-    vector<vec3> newPts(positions.size(), vec3(0));
-    vector<uint8_t> newCts(positions.size(), 0);
+    uint32_t pointSize = positions.size();
+    uint32_t faceSize = mesh.size();
+    uint32_t edgeSize = 2*faceSize;
+    uint32_t faceBase = pointSize;
+    uint32_t edgeBase = faceBase + faceSize;
+    uint32_t totalSize = edgeBase + edgeSize;
 
-    vector<vec3> facePts;
-    facePts.reserve(mesh.size());
-    for (uint32_t c = 0, n = mesh.size(); c < n; c++) {
+    vector<uint8_t> newCts(pointSize, 0);
+    vector<vec3> newPts;
+    newPts.reserve(totalSize);
+    newPts.resize(pointSize, vec3(0));
+
+    // Calculate the face points
+    for (uint32_t c = 0; c < faceSize; c++) {
         uint32_t p0 = mesh[c].e[0].pos;
         uint32_t p1 = mesh[c].e[1].pos;
         uint32_t p2 = mesh[c].e[2].pos;
@@ -391,7 +403,7 @@ void subdivideMesh() {
         } else {
             pt /= 3.f;
         }
-        facePts.push_back(pt);
+        newPts.push_back(pt);
         newPts[p0] += pt;
         newPts[p1] += pt;
         newPts[p2] += pt;
@@ -404,36 +416,133 @@ void subdivideMesh() {
         }
     }
 
-    vector<vec3> edgePts;
+    assert(newPts.size() == edgeBase);
+
+    // Calculate the edge points
     vector<uint32_t> edgePtPtrs;
-    edgePts.reserve(mesh.size() * 2);
-    edgePtPtrs.resize(mesh.size() * 4, BAD_OPP);
+    edgePtPtrs.resize(faceSize * 4, BAD_OPP);
     HalfEdge *edge = reinterpret_cast<HalfEdge *>(mesh.data());
-    for (uint32_t c = 0, n = mesh.size() * 4; c < n; c++) {
+    for (uint32_t c = 0, n = faceSize * 4; c < n; c++) {
         if (edge[c].opp != BAD_OPP && edge[c].opp > c) {
             uint32_t next = nextEdge(edge, c);
             vec3 pos = (positions[edge[c].pos] + positions[edge[next].pos] +
-                       facePts[c/4] + facePts[edge[c].opp / 4]) / 4.f;
-            uint32_t edgePtr = edgePts.size();
-            edgePts.push_back(pos);
-            edgePtPtrs[c/4] = edgePtr;
-            edgePtPtrs[edge[c].opp/4] = edgePtr;
+                       newPts[faceBase + c/4] + newPts[faceBase + edge[c].opp / 4]) / 4.f;
+            uint32_t edgePtr = newPts.size();
+            newPts.push_back(pos);
+            edgePtPtrs[c] = edgePtr;
+            edgePtPtrs[edge[c].opp] = edgePtr;
 
             newPts[edge[c].pos] += 2.f * pos;
             newPts[edge[next].pos] += 2.f * pos;
         }
     }
 
-    for (uint32_t c = 0, n = positions.size(); c < n; c++) {
+    // Calculate the updated original points
+    for (uint32_t c = 0, n = pointSize; c < n; c++) {
         float k = float(newCts[c]);
         assert(k >= 3);
         newPts[c] = (newPts[c] / k + (k - 3)*positions[c]) / k;
-        if (length(newPts[c]) > 30) {
-            printf("Long vector at %d\n", c);
+    }
+
+    // Calculate the new topology
+    vector<Quad> newMesh;
+    newMesh.reserve(4 * faceSize);
+    for (uint32_t c = 0, n = faceSize; c < n; c++) {
+        Quad &q = mesh[c];
+        if (isTriangles) {
+            // Create three quads
+            uint32_t center = faceBase + c;
+            uint32_t p0 = q.e[0].pos;
+            uint32_t e0 = edgePtPtrs[c*4 + 0];
+            uint32_t p1 = q.e[1].pos;
+            uint32_t e1 = edgePtPtrs[c*4 + 1];
+            uint32_t p2 = q.e[2].pos;
+            uint32_t e2 = edgePtPtrs[c*4 + 2];
+
+            uint32_t base = c * 3;
+
+            uint32_t base01 = q.e[0].opp / 4 * 3;
+            uint32_t base12 = q.e[1].opp / 4 * 3;
+            uint32_t base20 = q.e[2].opp / 4 * 3;
+
+            printf("%4d base %4d %4d %4d\n", base, base01, base12, base20);
+
+            uint32_t off01 = q.e[0].opp & 3;
+            uint32_t off12 = q.e[1].opp & 3;
+            uint32_t off20 = q.e[2].opp & 3;
+            uint32_t nxt01 = off01 == 2 ? 0 : off01+1;
+            uint32_t nxt12 = off12 == 2 ? 0 : off12+1;
+            uint32_t nxt20 = off20 == 2 ? 0 : off20+1;
+
+            Quad q0, q1, q2;
+            q0.e[0].pos = center;
+            q0.e[0].opp = (base + 2)*4 + 3;
+            q0.e[1].pos = e2;
+            q0.e[1].opp = (base20 + off20)*4 + 2;
+            q0.e[2].pos = p0;
+            q0.e[2].opp = (base01 + nxt01)*4 + 1;
+            q0.e[3].pos = e0;
+            q0.e[3].opp = (base + 1)*4 + 0;
+
+            q1.e[0].pos = center;
+            q1.e[0].opp = (base + 0)*4 + 3;
+            q1.e[1].pos = e0;
+            q1.e[1].opp = (base01 + off01)*4 + 2;
+            q1.e[2].pos = p1;
+            q1.e[2].opp = (base12 + nxt12)*4 + 1;
+            q1.e[3].pos = e1;
+            q1.e[3].opp = (base + 2)*4 + 0;
+
+            q2.e[0].pos = center;
+            q2.e[0].opp = (base + 1)*4 + 3;
+            q2.e[1].pos = e1;
+            q2.e[1].opp = (base12 + off12)*4 + 2;
+            q2.e[2].pos = p2;
+            q2.e[2].opp = (base20 + nxt20)*4 + 1;
+            q2.e[3].pos = e2;
+            q2.e[3].opp = (base + 0)*4 + 0;
+
+//            q0.e[0].pos = center;
+//            q0.e[1].pos = e0;
+//            q0.e[2].pos = e1;
+//            q0.e[3].pos = BAD_OPP;
+//
+//            q1.e[0].pos = center;
+//            q1.e[1].pos = e1;
+//            q1.e[2].pos = e2;
+//            q1.e[3].pos = BAD_OPP;
+//
+//            q2.e[0].pos = center;
+//            q2.e[1].pos = e2;
+//            q2.e[2].pos = e0;
+//            q2.e[3].pos = BAD_OPP;
+
+//            q0.e[0].pos = center;
+//            q0.e[1].pos = p0;
+//            q0.e[2].pos = p1;
+//            q0.e[3].pos = BAD_OPP;
+//
+//            q1.e[0].pos = center;
+//            q1.e[1].pos = p1;
+//            q1.e[2].pos = p2;
+//            q1.e[3].pos = BAD_OPP;
+//
+//            q2.e[0].pos = center;
+//            q2.e[1].pos = p2;
+//            q2.e[2].pos = p0;
+//            q2.e[3].pos = BAD_OPP;
+
+            newMesh.push_back(q0);
+            newMesh.push_back(q1);
+            newMesh.push_back(q2);
+        } else {
+
         }
     }
 
+    mesh = move(newMesh);
     positions = move(newPts);
+    isTriangles = false;
 }
 
 void draw() {
@@ -444,10 +553,12 @@ void draw() {
     glBindVertexArray(vao);
     glDrawArrays(GL_TRIANGLES, 0, verts.size());
 
-//    glDisable(GL_DEPTH_TEST);
-//    glUseProgram(lineShader);
-//    glBindVertexArray(linevao);
-//    glDrawElements(GL_LINES, linesSize, GL_UNSIGNED_INT, nullptr);
+    if (drawAdjacency) {
+        glDisable(GL_DEPTH_TEST);
+        glUseProgram(lineShader);
+        glBindVertexArray(linevao);
+        glDrawElements(GL_LINES, linesSize, GL_UNSIGNED_INT, nullptr);
+    }
 }
 
 void updateMatrices() {
@@ -482,8 +593,10 @@ static void glfw_key_callback(GLFWwindow* window, int key, int scancode, int act
         glPolygonMode(GL_FRONT_AND_BACK, wireframe ? GL_LINE : GL_FILL);
     } else if (key == GLFW_KEY_S) {
         subdivideMesh();
-        //generateLineBuffer();
+        generateLineBuffer();
         generateMeshBuffer();
+    } else if (key == GLFW_KEY_A) {
+        drawAdjacency = !drawAdjacency;
     }
 }
 
